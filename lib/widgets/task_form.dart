@@ -33,10 +33,11 @@ class _TaskFormState extends State<TaskForm> {
     _titleController = TextEditingController(text: task?.title ?? '');
     _noteController = TextEditingController(text: task?.note ?? '');
     _startDateTime =
-        task?.startDateTime ??
+        task?.startDateTime.toLocal() ??
         DateTime(now.year, now.month, now.day, now.hour, now.minute);
     _endDateTime =
-        task?.endDateTime ?? _startDateTime.add(const Duration(hours: 1));
+        task?.endDateTime.toLocal() ??
+        _startDateTime.add(const Duration(hours: 1));
     _status = task?.status ?? TaskStatus.pending;
   }
 
@@ -110,6 +111,8 @@ class _TaskFormState extends State<TaskForm> {
     setState(() => _isSaving = true);
     final task = TaskModel(
       id: widget.task?.id,
+      taskUuid: widget.task?.taskUuid,
+      serverId: widget.task?.serverId,
       title: _titleController.text.trim(),
       note: _noteController.text.trim().isEmpty
           ? null
@@ -118,6 +121,12 @@ class _TaskFormState extends State<TaskForm> {
       endDateTime: _endDateTime,
       status: _status,
       createdAt: widget.task?.createdAt ?? DateTime.now(),
+      syncStatus: widget.task?.syncStatus ?? TaskSyncStatus.pending,
+      serverVersion: widget.task?.serverVersion ?? 0,
+      localUpdatedAt: widget.task?.localUpdatedAt,
+      deletedAt: widget.task?.deletedAt,
+      syncError: widget.task?.syncError,
+      conflictData: widget.task?.conflictData,
     );
     try {
       await widget.onSave(task);
@@ -204,8 +213,11 @@ class _TaskFormState extends State<TaskForm> {
             controller: _titleController,
             label: 'Task title',
             hint: 'What needs to get done?',
+            maxLength: 255,
             validator: (value) => value == null || value.trim().isEmpty
                 ? 'Please enter a task title.'
+                : value.trim().length > 255
+                ? 'Task titles must be 255 characters or fewer.'
                 : null,
           ),
           const SizedBox(height: 16),

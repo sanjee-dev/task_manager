@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:task_manager/models/task_model.dart';
@@ -64,6 +66,29 @@ class TaskDetailsScreen extends StatelessWidget {
     }
   }
 
+  Future<void> _resolveConflict(
+    BuildContext context, {
+    required bool keepLocal,
+  }) async {
+    final taskUuid = task.taskUuid;
+    if (taskUuid == null) return;
+    try {
+      final provider = context.read<TaskProvider>();
+      await provider.resolveConflict(taskUuid, keepLocal: keepLocal);
+      if (!keepLocal &&
+          context.mounted &&
+          !provider.tasks.any((current) => current.taskUuid == taskUuid)) {
+        Navigator.of(context).pop();
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not resolve conflict: $error')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final currentTask = context.select<TaskProvider, TaskModel>(
@@ -72,6 +97,7 @@ class TaskDetailsScreen extends StatelessWidget {
         orElse: () => task,
       ),
     );
+    final serverTitle = _conflictTitle(currentTask.conflictData);
     return Scaffold(
       appBar: AppBar(
         title: const Text('Task details'),
@@ -91,6 +117,46 @@ class TaskDetailsScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
         children: [
+          if (currentTask.syncStatus == TaskSyncStatus.conflict)
+            Card(
+              color: const Color(0xFFFFF4E5),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'This task changed on the server.',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Choose which version to keep. Your local version is preserved until you decide.',
+                    ),
+                    if (serverTitle != null) ...[
+                      const SizedBox(height: 8),
+                      Text('Server title: $serverTitle'),
+                    ],
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        OutlinedButton(
+                          onPressed: () =>
+                              _resolveConflict(context, keepLocal: false),
+                          child: const Text('Use server version'),
+                        ),
+                        FilledButton(
+                          onPressed: () =>
+                              _resolveConflict(context, keepLocal: true),
+                          child: const Text('Keep my version'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(20),
@@ -178,6 +244,17 @@ class TaskDetailsScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  String? _conflictTitle(String? conflictData) {
+    if (conflictData == null) return null;
+    try {
+      final decoded = jsonDecode(conflictData);
+      if (decoded is Map<String, dynamic>) return decoded['title']?.toString();
+    } on FormatException {
+      return null;
+    }
+    return null;
   }
 }
 

@@ -7,6 +7,7 @@ class CustomTextField extends StatelessWidget {
     required this.label,
     this.hint,
     this.maxLines = 1,
+    this.maxLength,
     this.validator,
     this.textCapitalization = TextCapitalization.sentences,
   });
@@ -15,6 +16,7 @@ class CustomTextField extends StatelessWidget {
   final String label;
   final String? hint;
   final int maxLines;
+  final int? maxLength;
   final String? Function(String?)? validator;
   final TextCapitalization textCapitalization;
 
@@ -23,6 +25,7 @@ class CustomTextField extends StatelessWidget {
     return TextFormField(
       controller: controller,
       maxLines: maxLines,
+      maxLength: maxLength,
       textCapitalization: textCapitalization,
       validator: validator,
       decoration: InputDecoration(labelText: label, hintText: hint),

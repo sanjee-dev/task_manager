@@ -173,4 +173,10 @@ class _FakeTaskRepository implements TaskRepository {
   Future<void> deleteTask(int id) async {
     _tasks.remove(id);
   }
+
+  @override
+  Future<void> resolveConflict(
+    String taskUuid, {
+    required bool keepLocal,
+  }) async {}
 }

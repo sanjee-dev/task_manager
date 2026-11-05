@@ -106,6 +106,28 @@ class TaskCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 10),
                     StatusChip(status: task.status),
+                    if (task.syncStatus == TaskSyncStatus.conflict) ...[
+                      const SizedBox(height: 6),
+                      const Text(
+                        'Needs conflict resolution',
+                        style: TextStyle(
+                          color: Colors.deepOrange,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                    if (task.syncStatus == TaskSyncStatus.failed) ...[
+                      const SizedBox(height: 6),
+                      const Text(
+                        'Sync failed',
+                        style: TextStyle(
+                          color: Colors.red,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),

@@ -159,6 +159,32 @@ class HomeScreen extends StatelessWidget {
                                 ),
                               ],
                             ),
+                            if (provider.isSyncing) ...[
+                              const SizedBox(height: 12),
+                              const LinearProgressIndicator(),
+                            ] else if (provider.syncError != null ||
+                                provider.failedSyncCount > 0) ...[
+                              const SizedBox(height: 12),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      provider.syncError ??
+                                          '${provider.failedSyncCount} task change(s) need a sync retry.',
+                                      style: TextStyle(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .error,
+                                      ),
+                                    ),
+                                  ),
+                                  TextButton(
+                                    onPressed: provider.retrySync,
+                                    child: const Text('Retry sync'),
+                                  ),
+                                ],
+                              ),
+                            ],
                             const SizedBox(height: 21),
                             TextField(
                               onChanged: provider.setSearchQuery,

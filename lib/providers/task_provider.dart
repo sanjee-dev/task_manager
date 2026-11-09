@@ -117,6 +117,10 @@ class TaskProvider extends ChangeNotifier {
     await syncService?.synchronize(forceRetry: true);
   }
 
+  Future<void> stopSync() async {
+    await syncService?.stop();
+  }
+
   void _onSyncServiceChanged() {
     final syncing = syncService?.isSyncing ?? false;
     final completed = _wasSyncing && !syncing;

@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 class TaskApiException implements Exception {
@@ -16,18 +18,39 @@ class TaskApiException implements Exception {
 }
 
 class TaskApiService {
-  TaskApiService({http.Client? client, Uri? baseUri})
-    : _client = client ?? http.Client(),
+  TaskApiService({
+    http.Client? client,
+    Uri? baseUri,
+    String? token,
+    FutureOr<void> Function()? onUnauthorized,
+  }) : this._internal(client, baseUri, token, onUnauthorized);
+
+  TaskApiService._internal(
+    http.Client? client,
+    Uri? baseUri,
+    this._token,
+    this._onUnauthorized,
+  ) : _client = client ?? http.Client(),
       _baseUri =
           baseUri ??
           Uri.parse(
             const String.fromEnvironment(
               'TASK_API_BASE_URL',
-              defaultValue: 'http://10.0.2.2:8000/api/v1/',
+              defaultValue: 'http://172.29.186.58:8000/api/v1/',
             ),
-          );
+          ) {
+    if (kReleaseMode && _baseUri.scheme != 'https') {
+      throw ArgumentError.value(
+        _baseUri,
+        'baseUri',
+        'HTTPS is required for release builds.',
+      );
+    }
+  }
 
   final http.Client _client;
+  final String? _token;
+  final FutureOr<void> Function()? _onUnauthorized;
   final Uri _baseUri;
 
   Future<Map<String, Object?>> pushMutation(
@@ -36,9 +59,10 @@ class TaskApiService {
     final response = await _client
         .post(
           _baseUri.resolve('sync'),
-          headers: const {
+          headers: {
             'content-type': 'application/json',
             'accept': 'application/json',
+            if (_token != null) 'authorization': 'Bearer $_token',
           },
           body: jsonEncode({
             'mutations': [mutation],
@@ -58,7 +82,13 @@ class TaskApiService {
         .resolve('tasks')
         .replace(queryParameters: {'cursor': cursor.toString()});
     final response = await _client
-        .get(uri, headers: const {'accept': 'application/json'})
+        .get(
+          uri,
+          headers: {
+            'accept': 'application/json',
+            if (_token != null) 'authorization': 'Bearer $_token',
+          },
+        )
         .timeout(const Duration(seconds: 20));
     return _decodeResponse(response);
   }
@@ -84,6 +114,10 @@ class TaskApiService {
       );
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
+      final onUnauthorized = _onUnauthorized;
+      if (response.statusCode == 401 && onUnauthorized != null) {
+        unawaited(Future<void>.sync(onUnauthorized));
+      }
       final message = decoded['message']?.toString() ?? response.body;
       throw TaskApiException(message, statusCode: response.statusCode);
     }

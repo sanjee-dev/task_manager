@@ -16,6 +16,7 @@ class TaskSyncMutation extends Model
 
     protected $fillable = [
         'mutation_id',
+        'user_id',
         'task_uuid',
         'request_hash',
         'response',

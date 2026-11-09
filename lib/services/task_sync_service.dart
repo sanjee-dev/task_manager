@@ -24,6 +24,8 @@ class TaskSyncService extends ChangeNotifier {
   Future<void>? _syncFuture;
   bool _isSyncing = false;
   bool _started = false;
+  bool _stopped = false;
+  bool _disposed = false;
   bool _rerunRequested = false;
   bool _forceRetryRequested = false;
   String? _errorMessage;
@@ -34,6 +36,7 @@ class TaskSyncService extends ChangeNotifier {
   void start() {
     if (_started) return;
     _started = true;
+    _stopped = false;
     _connectivitySubscription = _connectivity.onConnectivityChanged.listen(
       (results) {
         if (results.any((result) => result != ConnectivityResult.none)) {
@@ -41,8 +44,10 @@ class TaskSyncService extends ChangeNotifier {
         }
       },
       onError: (Object error) {
-        _errorMessage = 'Could not monitor network connectivity: $error';
-        notifyListeners();
+        if (!_stopped) {
+          _errorMessage = 'Could not monitor network connectivity: $error';
+          _notifyListeners();
+        }
       },
     );
     unawaited(_syncIfConnected());
@@ -55,12 +60,15 @@ class TaskSyncService extends ChangeNotifier {
         await synchronize();
       }
     } catch (error) {
-      _errorMessage = 'Could not check network connectivity: $error';
-      notifyListeners();
+      if (!_stopped) {
+        _errorMessage = 'Could not check network connectivity: $error';
+        _notifyListeners();
+      }
     }
   }
 
   Future<void> synchronize({bool forceRetry = false}) {
+    if (_stopped) return Future<void>.value();
     final running = _syncFuture;
     if (running != null) {
       _rerunRequested = true;
@@ -72,7 +80,7 @@ class TaskSyncService extends ChangeNotifier {
     _syncFuture = future;
     return future.whenComplete(() {
       _syncFuture = null;
-      if (_rerunRequested) {
+      if (_rerunRequested && !_stopped) {
         _rerunRequested = false;
         final retry = _forceRetryRequested;
         _forceRetryRequested = false;
@@ -84,7 +92,7 @@ class TaskSyncService extends ChangeNotifier {
   Future<void> _runSynchronization(bool forceRetry) async {
     _isSyncing = true;
     _errorMessage = null;
-    notifyListeners();
+    _notifyListeners();
 
     try {
       await _queueUntrackedTasks();
@@ -106,6 +114,7 @@ class TaskSyncService extends ChangeNotifier {
 
       final blockedTasks = <String>{};
       for (final operation in operations) {
+        if (_stopped) break;
         final taskUuid = operation['task_uuid']! as String;
         if (blockedTasks.contains(taskUuid)) continue;
         await _pushOperation(operation);
@@ -117,12 +126,12 @@ class TaskSyncService extends ChangeNotifier {
         }
       }
 
-      await _pullChanges();
+      if (!_stopped) await _pullChanges();
     } catch (error) {
       _errorMessage = 'Synchronization failed: $error';
     } finally {
       _isSyncing = false;
-      notifyListeners();
+      _notifyListeners();
     }
   }
 
@@ -217,8 +226,19 @@ class TaskSyncService extends ChangeNotifier {
           await _database.removeTaskSyncOperations(taskUuid);
           return;
         }
+        if (status == 'forbidden') {
+          _errorMessage = 'A task change belongs to another account.';
+          await _database.setTaskSyncState(
+            taskUuid,
+            status: 'failed',
+            error: _errorMessage,
+          );
+          await _database.removeTaskSyncOperations(taskUuid);
+          return;
+        }
         throw FormatException('Unexpected sync result: $status');
       } catch (error) {
+        if (_stopped) return;
         final retryable = _isRetryable(error);
         final message = error.toString();
         await _database.updateSyncOperation(
@@ -354,10 +374,24 @@ class TaskSyncService extends ChangeNotifier {
         error is http.ClientException;
   }
 
+  Future<void> stop() async {
+    _stopped = true;
+    _rerunRequested = false;
+    _forceRetryRequested = false;
+    final subscription = _connectivitySubscription;
+    _connectivitySubscription = null;
+    await subscription?.cancel();
+    await _syncFuture;
+  }
+
+  void _notifyListeners() {
+    if (!_disposed) notifyListeners();
+  }
+
   @override
   void dispose() {
-    unawaited(_connectivitySubscription?.cancel());
-    _api.close();
+    _disposed = true;
+    unawaited(stop().whenComplete(_api.close));
     super.dispose();
   }
 }

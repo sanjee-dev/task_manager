@@ -39,6 +39,7 @@ enum TaskSyncStatus {
 }
 
 class TaskModel {
+  
   const TaskModel({
     this.id,
     this.taskUuid,

@@ -6,9 +6,45 @@ import 'package:http/testing.dart';
 import 'package:task_manager/services/task_api_service.dart';
 
 void main() {
+  test('uses the physical-device API URL for both sync requests', () async {
+    final requestUris = <Uri>[];
+    final api = TaskApiService(
+      client: MockClient((request) async {
+        requestUris.add(request.url);
+        if (request.url.path.endsWith('/sync')) {
+          return http.Response(
+            jsonEncode({
+              'data': [
+                {'mutation_id': 'mutation-1', 'status': 'synced', 'version': 1},
+              ],
+            }),
+            200,
+          );
+        }
+        return http.Response(
+          jsonEncode({
+            'data': [],
+            'meta': {'next_cursor': 16},
+          }),
+          200,
+        );
+      }),
+    );
+
+    await api.pushMutation({'mutation_id': 'mutation-1'});
+    await api.getChanges(16);
+
+    expect(requestUris, [
+      Uri.parse('http://172.29.186.58:8000/api/v1/sync'),
+      Uri.parse('http://172.29.186.58:8000/api/v1/tasks?cursor=16'),
+    ]);
+    api.close();
+  });
+
   test('posts an idempotent mutation to the sync endpoint', () async {
     final client = MockClient((request) async {
       expect(request.url.path, '/api/v1/sync');
+      expect(request.url.origin, 'https://example.test');
       expect(request.headers['content-type'], 'application/json');
       expect(jsonDecode(request.body), {
         'mutations': [
@@ -40,9 +76,12 @@ void main() {
 
   test('marks server failures as retryable API errors', () async {
     final api = TaskApiService(
-      client: MockClient(
-        (_) async => http.Response('Service unavailable', 503),
-      ),
+      client: MockClient((request) async {
+        expect(request.url.origin, 'https://example.test');
+        expect(request.url.path, '/api/v1/tasks');
+        expect(request.url.queryParameters, {'cursor': '0'});
+        return http.Response('Service unavailable', 503);
+      }),
       baseUri: Uri.parse('https://example.test/api/v1/'),
     );
 
@@ -56,4 +95,27 @@ void main() {
     );
     api.close();
   });
+
+  test(
+    'sends the signed-in bearer token and reports revoked sessions',
+    () async {
+      var sessionWasRejected = false;
+      final api = TaskApiService(
+        client: MockClient((request) async {
+          expect(request.headers['authorization'], 'Bearer session-token');
+          return http.Response(
+            jsonEncode({'message': 'Unauthenticated.'}),
+            401,
+          );
+        }),
+        baseUri: Uri.parse('https://example.test/api/v1/'),
+        token: 'session-token',
+        onUnauthorized: () => sessionWasRejected = true,
+      );
+
+      await expectLater(api.getChanges(0), throwsA(isA<TaskApiException>()));
+      expect(sessionWasRejected, isTrue);
+      api.close();
+    },
+  );
 }

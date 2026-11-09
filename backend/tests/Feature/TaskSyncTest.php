@@ -2,12 +2,23 @@
 
 namespace Tests\Feature;
 
+use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Auth;
 use Tests\TestCase;
 
 class TaskSyncTest extends TestCase
 {
     use RefreshDatabase;
+
+    private User $user;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->user = User::factory()->create(['email_verified_at' => now()]);
+        $this->actingAs($this->user, 'sanctum');
+    }
 
     public function test_replaying_a_mutation_does_not_duplicate_a_task(): void
     {
@@ -178,6 +189,59 @@ class TaskSyncTest extends TestCase
             'title' => 'Restore local copy',
             'version' => 3,
             'deleted_at' => null,
+        ]);
+    }
+
+    public function test_task_sync_is_protected_and_scoped_to_the_authenticated_user(): void
+    {
+        Auth::forgetGuards();
+        $this->postJson('/api/v1/sync', ['mutations' => []])->assertUnauthorized();
+
+        $this->actingAs($this->user, 'sanctum');
+        $taskUuid = 'abababab-abab-4bab-8bab-abababababab';
+        $this->postJson('/api/v1/sync', [
+            'mutations' => [
+                $this->upsertMutation(
+                    'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd',
+                    $taskUuid,
+                    0,
+                    'Private task',
+                ),
+            ],
+        ])->assertOk()->assertJsonPath('data.0.status', 'synced');
+
+        $otherUser = User::factory()->create(['email_verified_at' => now()]);
+        $this->actingAs($otherUser, 'sanctum');
+        $this->getJson('/api/v1/tasks?cursor=0')
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+        $this->postJson('/api/v1/sync', [
+            'mutations' => [
+                $this->upsertMutation(
+                    'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd',
+                    $taskUuid,
+                    0,
+                    'Private task',
+                ),
+            ],
+        ])->assertOk()
+            ->assertJsonPath('data.0.status', 'idempotency_key_reused')
+            ->assertJsonMissingPath('data.0.task');
+        $this->postJson('/api/v1/sync', [
+            'mutations' => [
+                $this->upsertMutation(
+                    'dededede-dede-4ede-8ede-dededededede',
+                    $taskUuid,
+                    1,
+                    'Attempt to change another user task',
+                ),
+            ],
+        ])->assertOk()->assertJsonPath('data.0.status', 'forbidden');
+
+        $this->assertDatabaseHas('tasks', [
+            'id' => $taskUuid,
+            'user_id' => $this->user->id,
+            'title' => 'Private task',
         ]);
     }
 

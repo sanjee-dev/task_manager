@@ -11,9 +11,10 @@ class DatabaseHelper {
 
   static final DatabaseHelper instance = DatabaseHelper._();
   static const _databaseName = 'task_manager.db';
-  static const _databaseVersion = 3;
+  static const _databaseVersion = 4;
   final String? _databasePath;
   Database? _database;
+  String _activeAccountId = 'legacy';
 
   Future<Database> get database async {
     if (_database != null) return _database!;
@@ -64,6 +65,22 @@ class DatabaseHelper {
           await db.execute('ALTER TABLE tasks ADD COLUMN conflict_data TEXT');
           await _createSyncStateTable(db);
         }
+        if (oldVersion < 4) {
+          await db.execute(
+            "ALTER TABLE tasks ADD COLUMN account_id TEXT NOT NULL DEFAULT 'legacy'",
+          );
+          if (oldVersion >= 2) {
+            await db.execute(
+              "ALTER TABLE sync_outbox ADD COLUMN account_id TEXT NOT NULL DEFAULT 'legacy'",
+            );
+          }
+          await db.execute(
+            'CREATE INDEX tasks_account_start ON tasks(account_id, start_datetime)',
+          );
+          await db.execute(
+            'CREATE INDEX IF NOT EXISTS sync_outbox_account_created ON sync_outbox(account_id, created_at)',
+          );
+        }
       },
     );
     return _database!;
@@ -72,6 +89,52 @@ class DatabaseHelper {
   Future<void> close() async {
     await _database?.close();
     _database = null;
+  }
+
+  Future<void> activateAccount(String accountId) async {
+    if (accountId.isEmpty || accountId == 'legacy') {
+      throw ArgumentError.value(accountId, 'accountId', 'Invalid account ID.');
+    }
+    final db = await database;
+    await db.transaction((transaction) async {
+      await transaction.update(
+        'tasks',
+        {'account_id': accountId},
+        where: 'account_id = ?',
+        whereArgs: ['legacy'],
+      );
+      await transaction.update(
+        'sync_outbox',
+        {'account_id': accountId},
+        where: 'account_id = ?',
+        whereArgs: ['legacy'],
+      );
+      final accountCursor = await transaction.query(
+        'sync_state',
+        columns: ['key'],
+        where: 'key = ?',
+        whereArgs: ['cursor:$accountId'],
+      );
+      if (accountCursor.isEmpty) {
+        await transaction.update(
+          'sync_state',
+          {'key': 'cursor:$accountId'},
+          where: 'key = ?',
+          whereArgs: ['cursor'],
+        );
+      } else {
+        await transaction.delete(
+          'sync_state',
+          where: 'key = ?',
+          whereArgs: ['cursor'],
+        );
+      }
+    });
+    _activeAccountId = accountId;
+  }
+
+  void deactivateAccount() {
+    _activeAccountId = 'anonymous';
   }
 
   static Future<void> _createTasksTable(DatabaseExecutor db) async {
@@ -91,9 +154,13 @@ class DatabaseHelper {
             local_updated_at TEXT NOT NULL,
             deleted_at TEXT,
             sync_error TEXT,
-            conflict_data TEXT
+            conflict_data TEXT,
+            account_id TEXT NOT NULL DEFAULT 'legacy'
           )
         ''');
+    await db.execute(
+      'CREATE INDEX tasks_account_start ON tasks(account_id, start_datetime)',
+    );
   }
 
   static Future<void> _createSyncOutboxTable(DatabaseExecutor db) async {
@@ -106,11 +173,15 @@ class DatabaseHelper {
         base_version INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
-        last_error TEXT
+        last_error TEXT,
+        account_id TEXT NOT NULL DEFAULT 'legacy'
       )
     ''');
     await db.execute(
       'CREATE INDEX sync_outbox_task_created ON sync_outbox(task_uuid, created_at)',
+    );
+    await db.execute(
+      'CREATE INDEX sync_outbox_account_created ON sync_outbox(account_id, created_at)',
     );
   }
 
@@ -131,20 +202,29 @@ class DatabaseHelper {
     final db = await database;
     return db.query(
       'tasks',
-      where: 'deleted_at IS NULL OR sync_status = ?',
-      whereArgs: ['conflict'],
+      where: 'account_id = ? AND (deleted_at IS NULL OR sync_status = ?)',
+      whereArgs: [_activeAccountId, 'conflict'],
       orderBy: 'start_datetime ASC, id DESC',
     );
   }
 
   Future<List<Map<String, Object?>>> getAllTaskRecords() async {
     final db = await database;
-    return db.query('tasks', orderBy: 'start_datetime ASC, id DESC');
+    return db.query(
+      'tasks',
+      where: 'account_id = ?',
+      whereArgs: [_activeAccountId],
+      orderBy: 'start_datetime ASC, id DESC',
+    );
   }
 
   Future<Map<String, Object?>?> getTaskById(int id) async {
     final db = await database;
-    final rows = await db.query('tasks', where: 'id = ?', whereArgs: [id]);
+    final rows = await db.query(
+      'tasks',
+      where: 'id = ? AND account_id = ?',
+      whereArgs: [id, _activeAccountId],
+    );
     return rows.isEmpty ? null : rows.single;
   }
 
@@ -152,8 +232,8 @@ class DatabaseHelper {
     final db = await database;
     final rows = await db.query(
       'tasks',
-      where: 'task_uuid = ?',
-      whereArgs: [taskUuid],
+      where: 'task_uuid = ? AND account_id = ?',
+      whereArgs: [taskUuid, _activeAccountId],
     );
     return rows.isEmpty ? null : rows.single;
   }
@@ -164,15 +244,24 @@ class DatabaseHelper {
   ) async {
     final db = await database;
     return db.transaction((transaction) async {
-      final id = await transaction.insert('tasks', task);
-      await transaction.insert('sync_outbox', mutation);
+      final id = await transaction.insert('tasks', {
+        ...task,
+        'account_id': _activeAccountId,
+      });
+      await transaction.insert('sync_outbox', {
+        ...mutation,
+        'account_id': _activeAccountId,
+      });
       return id;
     });
   }
 
   Future<void> enqueueSyncOperation(Map<String, Object?> mutation) async {
     final db = await database;
-    await db.insert('sync_outbox', mutation);
+    await db.insert('sync_outbox', {
+      ...mutation,
+      'account_id': _activeAccountId,
+    });
   }
 
   Future<void> updateTaskWithOutbox(
@@ -184,12 +273,15 @@ class DatabaseHelper {
     await db.transaction((transaction) async {
       final updated = await transaction.update(
         'tasks',
-        task,
-        where: 'id = ?',
-        whereArgs: [id],
+        {...task, 'account_id': _activeAccountId},
+        where: 'id = ? AND account_id = ?',
+        whereArgs: [id, _activeAccountId],
       );
       if (updated != 1) throw StateError('Task $id was not found.');
-      await transaction.insert('sync_outbox', mutation);
+      await transaction.insert('sync_outbox', {
+        ...mutation,
+        'account_id': _activeAccountId,
+      });
     });
   }
 
@@ -210,17 +302,25 @@ class DatabaseHelper {
           'sync_error': null,
           'conflict_data': null,
         },
-        where: 'id = ? AND task_uuid = ?',
-        whereArgs: [id, taskUuid],
+        where: 'id = ? AND task_uuid = ? AND account_id = ?',
+        whereArgs: [id, taskUuid, _activeAccountId],
       );
       if (updated != 1) throw StateError('Task $id was not found.');
-      await transaction.insert('sync_outbox', mutation);
+      await transaction.insert('sync_outbox', {
+        ...mutation,
+        'account_id': _activeAccountId,
+      });
     });
   }
 
   Future<List<Map<String, Object?>>> getSyncOutbox() async {
     final db = await database;
-    return db.query('sync_outbox', orderBy: 'created_at, rowid');
+    return db.query(
+      'sync_outbox',
+      where: 'account_id = ?',
+      whereArgs: [_activeAccountId],
+      orderBy: 'created_at, rowid',
+    );
   }
 
   Future<void> updateSyncOperation(
@@ -240,8 +340,8 @@ class DatabaseHelper {
     await db.update(
       'sync_outbox',
       values,
-      where: 'mutation_id = ?',
-      whereArgs: [mutationId],
+      where: 'mutation_id = ? AND account_id = ?',
+      whereArgs: [mutationId, _activeAccountId],
     );
   }
 
@@ -249,8 +349,8 @@ class DatabaseHelper {
     final db = await database;
     await db.delete(
       'sync_outbox',
-      where: 'mutation_id = ?',
-      whereArgs: [mutationId],
+      where: 'mutation_id = ? AND account_id = ?',
+      whereArgs: [mutationId, _activeAccountId],
     );
   }
 
@@ -258,8 +358,8 @@ class DatabaseHelper {
     final db = await database;
     await db.delete(
       'sync_outbox',
-      where: 'task_uuid = ?',
-      whereArgs: [taskUuid],
+      where: 'task_uuid = ? AND account_id = ?',
+      whereArgs: [taskUuid, _activeAccountId],
     );
   }
 
@@ -268,13 +368,13 @@ class DatabaseHelper {
     await db.transaction((transaction) async {
       await transaction.delete(
         'sync_outbox',
-        where: 'task_uuid = ?',
-        whereArgs: [taskUuid],
+        where: 'task_uuid = ? AND account_id = ?',
+        whereArgs: [taskUuid, _activeAccountId],
       );
       await transaction.delete(
         'tasks',
-        where: 'task_uuid = ?',
-        whereArgs: [taskUuid],
+        where: 'task_uuid = ? AND account_id = ?',
+        whereArgs: [taskUuid, _activeAccountId],
       );
     });
   }
@@ -288,17 +388,20 @@ class DatabaseHelper {
     await db.transaction((transaction) async {
       await transaction.delete(
         'sync_outbox',
-        where: 'task_uuid = ?',
-        whereArgs: [taskUuid],
+        where: 'task_uuid = ? AND account_id = ?',
+        whereArgs: [taskUuid, _activeAccountId],
       );
       final updated = await transaction.update(
         'tasks',
-        task,
-        where: 'task_uuid = ?',
-        whereArgs: [taskUuid],
+        {...task, 'account_id': _activeAccountId},
+        where: 'task_uuid = ? AND account_id = ?',
+        whereArgs: [taskUuid, _activeAccountId],
       );
       if (updated != 1) throw StateError('Task $taskUuid was not found.');
-      await transaction.insert('sync_outbox', mutation);
+      await transaction.insert('sync_outbox', {
+        ...mutation,
+        'account_id': _activeAccountId,
+      });
     });
   }
 
@@ -323,8 +426,8 @@ class DatabaseHelper {
     await db.update(
       'tasks',
       values,
-      where: 'task_uuid = ?',
-      whereArgs: [taskUuid],
+      where: 'task_uuid = ? AND account_id = ?',
+      whereArgs: [taskUuid, _activeAccountId],
     );
   }
 
@@ -337,8 +440,8 @@ class DatabaseHelper {
       final taskUuid = remote['task_uuid'] as String;
       final rows = await transaction.query(
         'tasks',
-        where: 'task_uuid = ?',
-        whereArgs: [taskUuid],
+        where: 'task_uuid = ? AND account_id = ?',
+        whereArgs: [taskUuid, _activeAccountId],
       );
       final remoteVersion = (remote['version'] as num).toInt();
       final remoteUpdatedAt = remote['updated_at'] as String;
@@ -357,6 +460,7 @@ class DatabaseHelper {
         'deleted_at': remote['deleted_at'],
         'sync_error': null,
         'conflict_data': null,
+        'account_id': _activeAccountId,
       };
 
       if (rows.isEmpty) {
@@ -402,7 +506,7 @@ class DatabaseHelper {
       'sync_state',
       columns: ['value'],
       where: 'key = ?',
-      whereArgs: ['cursor'],
+      whereArgs: [_cursorKey],
     );
     return rows.isEmpty ? 0 : int.parse(rows.single['value']! as String);
   }
@@ -410,8 +514,11 @@ class DatabaseHelper {
   Future<void> setSyncCursor(int cursor) async {
     final db = await database;
     await db.insert('sync_state', {
-      'key': 'cursor',
+      'key': _cursorKey,
       'value': cursor.toString(),
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
+
+  String get _cursorKey =>
+      _activeAccountId == 'legacy' ? 'cursor' : 'cursor:$_activeAccountId';
 }

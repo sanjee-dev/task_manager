@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:task_manager/models/task_model.dart';
+import 'package:task_manager/screens/auth_screens.dart';
 import 'package:task_manager/providers/task_provider.dart';
 import 'package:task_manager/screens/add_task_screen.dart';
 import 'package:task_manager/screens/edit_task_screen.dart';
@@ -14,8 +15,11 @@ class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
   Future<void> _addTask(BuildContext context) async {
-    await Navigator.of(context)
-        .push(MaterialPageRoute<void>(builder: (_) => const AddTaskScreen()));
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const AddTaskScreen(),
+      ),
+    );
   }
 
   Future<void> _deleteTask(
@@ -96,7 +100,7 @@ class HomeScreen extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Row(
+                            Row(
                               children: [
                                 Expanded(
                                   child: Column(
@@ -122,12 +126,20 @@ class HomeScreen extends StatelessWidget {
                                     ],
                                   ),
                                 ),
-                                CircleAvatar(
-                                  radius: 22,
-                                  backgroundColor: Color(0xFFEAF1FF),
-                                  child: Icon(
-                                    Icons.checklist_rounded,
-                                    color: AppColors.primary,
+                                IconButton(
+                                  tooltip: 'Profile and settings',
+                                  onPressed: () => Navigator.of(context).push(
+                                    MaterialPageRoute<void>(
+                                      builder: (_) => const ProfileScreen(),
+                                    ),
+                                  ),
+                                  icon: const CircleAvatar(
+                                    radius: 22,
+                                    backgroundColor: Color(0xFFEAF1FF),
+                                    child: Icon(
+                                      Icons.person_outline_rounded,
+                                      color: AppColors.primary,
+                                    ),
                                   ),
                                 ),
                               ],

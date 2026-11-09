@@ -175,6 +175,65 @@ void main() {
     sync.dispose();
   });
 
+  test('keeps task rows and pending mutations isolated per account', () async {
+    final sync = TaskSyncService(
+      database,
+      TaskApiService(
+        client: MockClient((_) async => throw StateError('Unexpected request')),
+        baseUri: Uri.parse('https://example.test/api/v1/'),
+      ),
+    );
+    final repository = TaskRepository(database, sync);
+    final start = DateTime.utc(2026, 11, 5, 9);
+    final legacyTask = await repository.createTask(
+      TaskModel(
+        title: 'Existing offline task',
+        startDateTime: start,
+        endDateTime: start.add(const Duration(hours: 1)),
+        createdAt: start,
+      ),
+    );
+
+    await database.activateAccount('user-a');
+    expect((await repository.getTasks()).single.id, legacyTask.id);
+    await database.setSyncCursor(8);
+    final taskA = await repository.createTask(
+      TaskModel(
+        title: 'User A task',
+        startDateTime: start,
+        endDateTime: start.add(const Duration(hours: 1)),
+        createdAt: start,
+      ),
+    );
+    expect(await database.getSyncOutbox(), hasLength(2));
+
+    await database.activateAccount('user-b');
+    expect(await repository.getTasks(), isEmpty);
+    expect(await database.getSyncOutbox(), isEmpty);
+    expect(await database.getSyncCursor(), 0);
+    await database.setSyncCursor(2);
+    await repository.createTask(
+      TaskModel(
+        title: 'User B task',
+        startDateTime: start,
+        endDateTime: start.add(const Duration(hours: 1)),
+        createdAt: start,
+      ),
+    );
+    expect(await repository.getTasks(), hasLength(1));
+    expect(await database.getSyncOutbox(), hasLength(1));
+
+    await database.activateAccount('user-a');
+    expect(await database.getSyncCursor(), 8);
+    expect((await repository.getTasks()).map((task) => task.title).toSet(), {
+      'Existing offline task',
+      'User A task',
+    });
+    expect(await database.getSyncOutbox(), hasLength(2));
+    expect(await database.getTaskById(taskA.id!), isNotNull);
+    sync.dispose();
+  });
+
   test(
     'synchronizes queued edits in order using the latest server version',
     () async {

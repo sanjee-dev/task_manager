@@ -23,8 +23,9 @@ class TaskSyncController extends Controller
             'cursor' => ['sometimes', 'integer', 'min:0'],
         ]);
         $cursor = (int) ($validated['cursor'] ?? 0);
+        $userId = $request->user()->id;
 
-        return DB::transaction(function () use ($cursor): JsonResponse {
+        return DB::transaction(function () use ($cursor, $userId): JsonResponse {
             $changes = TaskChange::query()
                 ->where('id', '>', $cursor)
                 ->orderBy('id')
@@ -34,6 +35,7 @@ class TaskSyncController extends Controller
             $latestChanges = $changes->groupBy('task_uuid')
                 ->map(fn ($taskChanges) => $taskChanges->last());
             $tasks = Task::withTrashed()
+                ->where('user_id', $userId)
                 ->whereIn('id', $latestChanges->pluck('task_uuid'))
                 ->get()
                 ->keyBy('id');
@@ -53,6 +55,7 @@ class TaskSyncController extends Controller
 
     public function sync(Request $request): JsonResponse
     {
+        $userId = $request->user()->id;
         $validated = $request->validate([
             'mutations' => ['required', 'array', 'max:100'],
         ]);
@@ -118,7 +121,7 @@ class TaskSyncController extends Controller
                 continue;
             }
 
-            $results[] = $this->applyMutation($mutation);
+            $results[] = $this->applyMutation($mutation, $userId);
         }
 
         return response()->json(['data' => $results]);
@@ -128,20 +131,26 @@ class TaskSyncController extends Controller
      * @param  array<string, mixed>  $mutation
      * @return array<string, mixed>
      */
-    private function applyMutation(array $mutation): array
+    private function applyMutation(array $mutation, int $userId): array
     {
         $requestHash = hash('sha256', json_encode(
             $this->canonicalize($mutation),
             JSON_THROW_ON_ERROR,
         ));
 
-        $apply = function () use ($mutation, $requestHash): array {
+        $apply = function () use ($mutation, $requestHash, $userId): array {
             $existing = TaskSyncMutation::query()
                 ->whereKey($mutation['mutation_id'])
                 ->lockForUpdate()
                 ->first();
 
             if ($existing !== null) {
+                if ((int) $existing->user_id !== $userId) {
+                    return [
+                        'mutation_id' => $mutation['mutation_id'],
+                        'status' => 'idempotency_key_reused',
+                    ];
+                }
                 if (! hash_equals($existing->request_hash, $requestHash)) {
                     return [
                         'mutation_id' => $mutation['mutation_id'],
@@ -156,10 +165,18 @@ class TaskSyncController extends Controller
                 ->whereKey($mutation['task_uuid'])
                 ->lockForUpdate()
                 ->first();
-            $result = $this->applyTaskChange($mutation, $task);
+            if ($task !== null && (int) $task->user_id !== $userId) {
+                return [
+                    'mutation_id' => $mutation['mutation_id'],
+                    'task_uuid' => $mutation['task_uuid'],
+                    'status' => 'forbidden',
+                ];
+            }
+            $result = $this->applyTaskChange($mutation, $task, $userId);
 
             TaskSyncMutation::query()->create([
                 'mutation_id' => $mutation['mutation_id'],
+                'user_id' => $userId,
                 'task_uuid' => $mutation['task_uuid'],
                 'request_hash' => $requestHash,
                 'response' => $result,
@@ -175,6 +192,12 @@ class TaskSyncController extends Controller
                 ->whereKey($mutation['mutation_id'])
                 ->first();
             if ($existing !== null) {
+                if ((int) $existing->user_id !== $userId) {
+                    return [
+                        'mutation_id' => $mutation['mutation_id'],
+                        'status' => 'idempotency_key_reused',
+                    ];
+                }
                 if (! hash_equals($existing->request_hash, $requestHash)) {
                     return [
                         'mutation_id' => $mutation['mutation_id'],
@@ -193,13 +216,14 @@ class TaskSyncController extends Controller
      * @param  array<string, mixed>  $mutation
      * @return array<string, mixed>
      */
-    private function applyTaskChange(array $mutation, ?Task $task): array
+    private function applyTaskChange(array $mutation, ?Task $task, int $userId): array
     {
         $baseVersion = (int) $mutation['base_version'];
 
         if ($task === null && $mutation['operation'] === 'upsert' && $baseVersion === 0) {
             $task = Task::query()->create([
                 'id' => $mutation['task_uuid'],
+                'user_id' => $userId,
                 ...$this->taskAttributes($mutation['task']),
                 'version' => 1,
             ]);

@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Task extends Model
@@ -15,6 +16,7 @@ class Task extends Model
 
     protected $fillable = [
         'id',
+        'user_id',
         'title',
         'note',
         'start_datetime',
@@ -31,5 +33,10 @@ class Task extends Model
             'deleted_at' => 'immutable_datetime',
             'version' => 'integer',
         ];
+    }
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
     }
 }

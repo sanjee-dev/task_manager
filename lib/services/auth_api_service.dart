@@ -47,37 +47,14 @@ class AuthApiService {
     return versionedBase.resolve('../');
   }
 
-  Future<void> register({
-    required String name,
-    required String email,
-    required String password,
-  }) async {
-    await _request(
-      'register',
-      body: {
-        'name': name,
-        'email': email,
-        'password': password,
-        'password_confirmation': password,
-      },
-    );
+  Future<void> register({required String name, required String email}) async {
+    await _request('register', body: {'name': name, 'email': email});
   }
 
-  Future<void> verifyEmailOtp({
-    required String email,
-    required String otp,
-  }) async {
-    await _request('verify-email-otp', body: {'email': email, 'otp': otp});
-  }
-
-  Future<void> resendOtp(String email) async {
-    await _request('resend-otp', body: {'email': email});
-  }
-
-  Future<AuthSession> login(String email, String password) async {
+  Future<AuthSession> login(String username, String password) async {
     final response = await _request(
       'login',
-      body: {'email': email, 'password': password},
+      body: {'username': username, 'password': password},
     );
     final data = response['data'];
     if (data is! Map<String, Object?> ||
@@ -112,33 +89,16 @@ class AuthApiService {
     await _request('forgot-password', body: {'email': email});
   }
 
-  Future<String> verifyResetOtp({
-    required String email,
-    required String otp,
-  }) async {
-    final response = await _request(
-      'verify-reset-otp',
-      body: {'email': email, 'otp': otp},
-    );
-    final data = response['data'];
-    if (data is! Map<String, Object?> || data['reset_token'] is! String) {
-      throw const FormatException(
-        'The reset API returned an invalid response.',
-      );
-    }
-    return data['reset_token']! as String;
-  }
-
   Future<void> resetPassword({
     required String email,
-    required String resetToken,
+    required String token,
     required String password,
   }) async {
     await _request(
       'reset-password',
       body: {
         'email': email,
-        'reset_token': resetToken,
+        'token': token,
         'password': password,
         'password_confirmation': password,
       },

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\Task;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Auth;
@@ -150,6 +151,22 @@ class TaskSyncTest extends TestCase
         $this->assertDatabaseCount('tasks', 0);
     }
 
+    public function test_only_pending_and_done_task_statuses_are_accepted(): void
+    {
+        $mutation = $this->upsertMutation(
+            '98989898-9898-4989-8989-989898989898',
+            '97979797-9797-4979-8979-979797979797',
+            0,
+            'Task with invalid status',
+        );
+        $mutation['task']['status'] = 'in_progress';
+
+        $this->postJson('/api/v1/sync', ['mutations' => [$mutation]])
+            ->assertOk()
+            ->assertJsonPath('data.0.status', 'validation_error');
+        $this->assertDatabaseCount('tasks', 0);
+    }
+
     public function test_local_resolution_can_restore_a_server_deleted_task(): void
     {
         $taskUuid = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -192,7 +209,7 @@ class TaskSyncTest extends TestCase
         ]);
     }
 
-    public function test_task_sync_is_protected_and_scoped_to_the_authenticated_user(): void
+    public function test_task_sync_is_protected_and_shared_between_authenticated_users(): void
     {
         Auth::forgetGuards();
         $this->postJson('/api/v1/sync', ['mutations' => []])->assertUnauthorized();
@@ -214,7 +231,9 @@ class TaskSyncTest extends TestCase
         $this->actingAs($otherUser, 'sanctum');
         $this->getJson('/api/v1/tasks?cursor=0')
             ->assertOk()
-            ->assertJsonCount(0, 'data');
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.created_by_user_id', $this->user->id)
+            ->assertJsonPath('data.0.updated_by_user_id', $this->user->id);
         $this->postJson('/api/v1/sync', [
             'mutations' => [
                 $this->upsertMutation(
@@ -227,22 +246,48 @@ class TaskSyncTest extends TestCase
         ])->assertOk()
             ->assertJsonPath('data.0.status', 'idempotency_key_reused')
             ->assertJsonMissingPath('data.0.task');
+        $sharedUpdate = $this->upsertMutation(
+            'dededede-dede-4ede-8ede-dededededede',
+            $taskUuid,
+            1,
+            'Updated by a shared user',
+        );
+        $sharedUpdate['task']['user_id'] = 999999;
+        $sharedUpdate['task']['updated_by_user_id'] = 999999;
+        $this->postJson('/api/v1/sync', ['mutations' => [$sharedUpdate]])
+            ->assertOk()
+            ->assertJsonPath('data.0.status', 'synced')
+            ->assertJsonPath('data.0.task.created_by_user_id', $this->user->id)
+            ->assertJsonPath('data.0.task.updated_by_user_id', $otherUser->id);
+        $this->getJson('/api/v1/tasks?cursor=1')
+            ->assertOk()
+            ->assertJsonPath('data.0.title', 'Updated by a shared user')
+            ->assertJsonPath('data.0.updated_by_user_id', $otherUser->id)
+            ->assertJsonPath('meta.next_cursor', 2);
+
         $this->postJson('/api/v1/sync', [
-            'mutations' => [
-                $this->upsertMutation(
-                    'dededede-dede-4ede-8ede-dededededede',
-                    $taskUuid,
-                    1,
-                    'Attempt to change another user task',
-                ),
-            ],
-        ])->assertOk()->assertJsonPath('data.0.status', 'forbidden');
+            'mutations' => [[
+                'mutation_id' => 'efefefef-efef-4fef-8fef-efefefefefef',
+                'task_uuid' => $taskUuid,
+                'operation' => 'delete',
+                'base_version' => 2,
+            ]],
+        ])->assertOk()
+            ->assertJsonPath('data.0.status', 'synced')
+            ->assertJsonPath('data.0.task.updated_by_user_id', $otherUser->id);
+        $this->getJson('/api/v1/tasks?cursor=2')
+            ->assertOk()
+            ->assertJsonPath('data.0.task_uuid', $taskUuid)
+            ->assertJsonPath('data.0.deleted_at', fn ($value) => $value !== null)
+            ->assertJsonPath('meta.next_cursor', 3);
 
         $this->assertDatabaseHas('tasks', [
             'id' => $taskUuid,
             'user_id' => $this->user->id,
-            'title' => 'Private task',
+            'updated_by_user_id' => $otherUser->id,
+            'title' => 'Updated by a shared user',
         ]);
+        $this->assertTrue(Task::withTrashed()->findOrFail($taskUuid)->trashed());
     }
 
     /**

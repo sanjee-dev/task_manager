@@ -54,6 +54,9 @@ void main() {
             'status': 'pending',
             'created_at': '2026-11-04T12:00:00',
           });
+          await db.rawUpdate(
+            "UPDATE sqlite_sequence SET seq = 9 WHERE name = 'tasks'",
+          );
         },
       ),
     );
@@ -68,6 +71,20 @@ void main() {
     expect(records.single['local_updated_at'], isA<String>());
     expect(await database.getSyncCursor(), 0);
     expect(await database.getSyncOutbox(), isEmpty);
+    final nextId = await (await database.database).insert('tasks', {
+      'task_uuid': '12121212-1212-4121-8121-121212121212',
+      'title': 'After migration',
+      'start_datetime': '2026-11-05T09:00:00',
+      'end_datetime': '2026-11-05T10:00:00',
+      'created_at': '2026-11-05T08:00:00',
+      'local_updated_at': '2026-11-05T08:00:00',
+    });
+    expect(nextId, 10);
+    await (await database.database).delete(
+      'tasks',
+      where: 'id = ?',
+      whereArgs: [nextId],
+    );
 
     final sync = TaskSyncService(
       database,
@@ -125,6 +142,130 @@ void main() {
     sync.dispose();
   });
 
+  test(
+    'upgrades account-partitioned rows and retains pending outbox changes',
+    () async {
+      final oldDatabase = await databaseFactory.openDatabase(
+        '${directory.path}${Platform.pathSeparator}tasks.db',
+        options: OpenDatabaseOptions(
+          version: 4,
+          onCreate: (db, version) async {
+            await db.execute('''
+            CREATE TABLE tasks (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              task_uuid TEXT NOT NULL UNIQUE,
+              server_id TEXT,
+              title TEXT NOT NULL,
+              note TEXT,
+              start_datetime TEXT NOT NULL,
+              end_datetime TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending',
+              created_at TEXT NOT NULL,
+              sync_status TEXT NOT NULL DEFAULT 'pending',
+              server_version INTEGER NOT NULL DEFAULT 0,
+              local_updated_at TEXT NOT NULL,
+              deleted_at TEXT,
+              sync_error TEXT,
+              conflict_data TEXT,
+              account_id TEXT NOT NULL DEFAULT 'legacy'
+            )
+          ''');
+            await db.execute(
+              'CREATE INDEX tasks_account_start ON tasks(account_id, start_datetime)',
+            );
+            await db.execute('''
+            CREATE TABLE sync_outbox (
+              mutation_id TEXT PRIMARY KEY,
+              task_uuid TEXT NOT NULL,
+              operation TEXT NOT NULL CHECK (operation IN ('upsert', 'delete')),
+              payload TEXT NOT NULL,
+              base_version INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL,
+              attempts INTEGER NOT NULL DEFAULT 0,
+              last_error TEXT,
+              account_id TEXT NOT NULL DEFAULT 'legacy'
+            )
+          ''');
+            await db.execute('''
+            CREATE TABLE sync_state (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            )
+          ''');
+            await db.insert('sync_state', {
+              'key': 'cursor:user-a',
+              'value': '8',
+            });
+            await db.insert('sync_state', {
+              'key': 'cursor:user-b',
+              'value': '16',
+            });
+            await db.insert('tasks', {
+              'task_uuid': '34343434-3434-4434-8434-343434343434',
+              'title': 'Pending account task',
+              'start_datetime': '2026-11-05T09:00:00Z',
+              'end_datetime': '2026-11-05T10:00:00Z',
+              'created_at': '2026-11-05T08:00:00Z',
+              'sync_status': 'pending',
+              'server_version': 0,
+              'local_updated_at': '2026-11-05T08:00:00Z',
+              'account_id': 'user-a',
+            });
+            await db.insert('sync_outbox', {
+              'mutation_id': '45454545-4545-4454-8454-454545454545',
+              'task_uuid': '34343434-3434-4434-8434-343434343434',
+              'operation': 'upsert',
+              'payload': '{}',
+              'base_version': 0,
+              'created_at': '2026-11-05T08:00:00Z',
+              'account_id': 'user-a',
+            });
+            await db.rawUpdate(
+              "UPDATE sqlite_sequence SET seq = 20 WHERE name = 'tasks'",
+            );
+          },
+        ),
+      );
+      await oldDatabase.close();
+
+      await database.activateAccount('user-a');
+      expect(await database.getSyncCursor(), 0);
+      expect(
+        (await database.getAllTaskRecords()).single['title'],
+        'Pending account task',
+      );
+      expect(await database.getSyncOutbox(), hasLength(1));
+
+      await database.activateAccount('user-b');
+      expect(await database.getSyncCursor(), 0);
+      await database.applyRemoteTask({
+        'task_uuid': '34343434-3434-4434-8434-343434343434',
+        'server_id': '34343434-3434-4434-8434-343434343434',
+        'title': 'Shared task copy',
+        'note': null,
+        'start_datetime': '2026-11-05T09:00:00Z',
+        'end_datetime': '2026-11-05T10:00:00Z',
+        'status': 'pending',
+        'version': 1,
+        'created_at': '2026-11-05T08:00:00Z',
+        'updated_at': '2026-11-05T08:30:00Z',
+        'deleted_at': null,
+      });
+      expect(
+        (await database.getAllTaskRecords()).single['title'],
+        'Shared task copy',
+      );
+      expect(await database.getSyncOutbox(), isEmpty);
+
+      await database.activateAccount('user-a');
+      expect(
+        (await database.getAllTaskRecords()).single['sync_status'],
+        'pending',
+      );
+      expect(await database.getSyncOutbox(), hasLength(1));
+    },
+  );
+
   test('persists offline creates and deletes with outbox mutations', () async {
     final sync = TaskSyncService(
       database,
@@ -175,64 +316,87 @@ void main() {
     sync.dispose();
   });
 
-  test('keeps task rows and pending mutations isolated per account', () async {
-    final sync = TaskSyncService(
-      database,
-      TaskApiService(
-        client: MockClient((_) async => throw StateError('Unexpected request')),
-        baseUri: Uri.parse('https://example.test/api/v1/'),
-      ),
-    );
-    final repository = TaskRepository(database, sync);
-    final start = DateTime.utc(2026, 11, 5, 9);
-    final legacyTask = await repository.createTask(
-      TaskModel(
-        title: 'Existing offline task',
-        startDateTime: start,
-        endDateTime: start.add(const Duration(hours: 1)),
-        createdAt: start,
-      ),
-    );
+  test(
+    'keeps pending mutations account-bound while caching shared tasks',
+    () async {
+      final sync = TaskSyncService(
+        database,
+        TaskApiService(
+          client: MockClient(
+            (_) async => throw StateError('Unexpected request'),
+          ),
+          baseUri: Uri.parse('https://example.test/api/v1/'),
+        ),
+      );
+      final repository = TaskRepository(database, sync);
+      final start = DateTime.utc(2026, 11, 5, 9);
+      final legacyTask = await repository.createTask(
+        TaskModel(
+          title: 'Existing offline task',
+          startDateTime: start,
+          endDateTime: start.add(const Duration(hours: 1)),
+          createdAt: start,
+        ),
+      );
 
-    await database.activateAccount('user-a');
-    expect((await repository.getTasks()).single.id, legacyTask.id);
-    await database.setSyncCursor(8);
-    final taskA = await repository.createTask(
-      TaskModel(
-        title: 'User A task',
-        startDateTime: start,
-        endDateTime: start.add(const Duration(hours: 1)),
-        createdAt: start,
-      ),
-    );
-    expect(await database.getSyncOutbox(), hasLength(2));
+      await database.activateAccount('user-a');
+      expect((await repository.getTasks()).single.id, legacyTask.id);
+      await database.setSyncCursor(8);
+      final taskA = await repository.createTask(
+        TaskModel(
+          title: 'User A task',
+          startDateTime: start,
+          endDateTime: start.add(const Duration(hours: 1)),
+          createdAt: start,
+        ),
+      );
+      expect(await database.getSyncOutbox(), hasLength(2));
 
-    await database.activateAccount('user-b');
-    expect(await repository.getTasks(), isEmpty);
-    expect(await database.getSyncOutbox(), isEmpty);
-    expect(await database.getSyncCursor(), 0);
-    await database.setSyncCursor(2);
-    await repository.createTask(
-      TaskModel(
-        title: 'User B task',
-        startDateTime: start,
-        endDateTime: start.add(const Duration(hours: 1)),
-        createdAt: start,
-      ),
-    );
-    expect(await repository.getTasks(), hasLength(1));
-    expect(await database.getSyncOutbox(), hasLength(1));
+      await database.activateAccount('user-b');
+      expect(await repository.getTasks(), isEmpty);
+      expect(await database.getSyncOutbox(), isEmpty);
+      expect(await database.getSyncCursor(), 0);
+      await database.setSyncCursor(2);
+      final taskB = await repository.createTask(
+        TaskModel(
+          title: 'User B task',
+          startDateTime: start,
+          endDateTime: start.add(const Duration(hours: 1)),
+          createdAt: start,
+        ),
+      );
+      await database.applyRemoteTask({
+        'task_uuid': taskA.taskUuid,
+        'server_id': taskA.taskUuid,
+        'title': 'User A task',
+        'note': null,
+        'start_datetime': start.toIso8601String(),
+        'end_datetime': start.add(const Duration(hours: 1)).toIso8601String(),
+        'status': 'pending',
+        'version': 1,
+        'created_at': start.toIso8601String(),
+        'updated_at': start.toIso8601String(),
+        'deleted_at': null,
+      });
+      expect(await repository.getTasks(), hasLength(2));
+      expect((await repository.getTasks()).map((task) => task.title).toSet(), {
+        'User A task',
+        'User B task',
+      });
+      expect(await database.getSyncOutbox(), hasLength(1));
+      expect(await database.getTaskById(taskB.id!), isNotNull);
 
-    await database.activateAccount('user-a');
-    expect(await database.getSyncCursor(), 8);
-    expect((await repository.getTasks()).map((task) => task.title).toSet(), {
-      'Existing offline task',
-      'User A task',
-    });
-    expect(await database.getSyncOutbox(), hasLength(2));
-    expect(await database.getTaskById(taskA.id!), isNotNull);
-    sync.dispose();
-  });
+      await database.activateAccount('user-a');
+      expect(await database.getSyncCursor(), 8);
+      expect((await repository.getTasks()).map((task) => task.title).toSet(), {
+        'Existing offline task',
+        'User A task',
+      });
+      expect(await database.getSyncOutbox(), hasLength(2));
+      expect(await database.getTaskById(taskA.id!), isNotNull);
+      sync.dispose();
+    },
+  );
 
   test(
     'synchronizes queued edits in order using the latest server version',

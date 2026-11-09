@@ -1,7 +1,10 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:sqflite/sqflite.dart' as sqflite;
+import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart';
 import 'package:task_manager/database/database_helper.dart';
 import 'package:task_manager/providers/auth_provider.dart';
 import 'package:task_manager/providers/task_provider.dart';
@@ -14,6 +17,9 @@ import 'package:task_manager/utils/app_theme.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  if (kIsWeb) {
+    sqflite.databaseFactory = databaseFactoryFfiWeb;
+  }
   final tokenStore = SecureAuthTokenStore();
   final authProvider = AuthProvider(
     AuthRepository(AuthApiService(), tokenStore),

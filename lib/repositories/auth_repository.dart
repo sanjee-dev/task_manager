@@ -37,37 +37,22 @@ class AuthRepository {
     }
   }
 
-  Future<AuthUser> login(String email, String password) async {
-    final session = await _api.login(email, password);
+  Future<AuthUser> login(String username, String password) async {
+    final session = await _api.login(username, password);
     await _tokenStore.writeSession(session.token, session.user);
     return session.user;
   }
 
-  Future<void> register({
-    required String name,
-    required String email,
-    required String password,
-  }) => _api.register(name: name, email: email, password: password);
-
-  Future<void> verifyEmailOtp({required String email, required String otp}) =>
-      _api.verifyEmailOtp(email: email, otp: otp);
-
-  Future<void> resendOtp(String email) => _api.resendOtp(email);
+  Future<void> register({required String name, required String email}) =>
+      _api.register(name: name, email: email);
 
   Future<void> forgotPassword(String email) => _api.forgotPassword(email);
 
-  Future<String> verifyResetOtp({required String email, required String otp}) =>
-      _api.verifyResetOtp(email: email, otp: otp);
-
   Future<void> resetPassword({
     required String email,
-    required String resetToken,
+    required String token,
     required String password,
-  }) => _api.resetPassword(
-    email: email,
-    resetToken: resetToken,
-    password: password,
-  );
+  }) => _api.resetPassword(email: email, token: token, password: password);
 
   Future<void> changePassword({
     required String token,

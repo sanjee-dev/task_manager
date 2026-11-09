@@ -45,8 +45,8 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> login(String email, String password) async {
-    final user = await _repository.login(email, password);
+  Future<void> login(String username, String password) async {
+    final user = await _repository.login(username, password);
     final session = await _repository.readSession();
     if (session == null) {
       throw StateError('The sign-in session was not saved.');
@@ -54,32 +54,18 @@ class AuthProvider extends ChangeNotifier {
     await _activateSession(session.token, user);
   }
 
-  Future<void> register({
-    required String name,
-    required String email,
-    required String password,
-  }) => _repository.register(name: name, email: email, password: password);
-
-  Future<void> verifyEmailOtp({required String email, required String otp}) =>
-      _repository.verifyEmailOtp(email: email, otp: otp);
-
-  Future<void> resendOtp(String email) => _repository.resendOtp(email);
+  Future<void> register({required String name, required String email}) =>
+      _repository.register(name: name, email: email);
 
   Future<void> forgotPassword(String email) =>
       _repository.forgotPassword(email);
 
-  Future<String> verifyResetOtp({required String email, required String otp}) =>
-      _repository.verifyResetOtp(email: email, otp: otp);
-
   Future<void> resetPassword({
     required String email,
-    required String resetToken,
+    required String token,
     required String password,
-  }) => _repository.resetPassword(
-    email: email,
-    resetToken: resetToken,
-    password: password,
-  );
+  }) =>
+      _repository.resetPassword(email: email, token: token, password: password);
 
   Future<void> changePassword({
     required String currentPassword,

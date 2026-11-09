@@ -23,9 +23,8 @@ class TaskSyncController extends Controller
             'cursor' => ['sometimes', 'integer', 'min:0'],
         ]);
         $cursor = (int) ($validated['cursor'] ?? 0);
-        $userId = $request->user()->id;
 
-        return DB::transaction(function () use ($cursor, $userId): JsonResponse {
+        return DB::transaction(function () use ($cursor): JsonResponse {
             $changes = TaskChange::query()
                 ->where('id', '>', $cursor)
                 ->orderBy('id')
@@ -35,7 +34,6 @@ class TaskSyncController extends Controller
             $latestChanges = $changes->groupBy('task_uuid')
                 ->map(fn ($taskChanges) => $taskChanges->last());
             $tasks = Task::withTrashed()
-                ->where('user_id', $userId)
                 ->whereIn('id', $latestChanges->pluck('task_uuid'))
                 ->get()
                 ->keyBy('id');
@@ -165,13 +163,6 @@ class TaskSyncController extends Controller
                 ->whereKey($mutation['task_uuid'])
                 ->lockForUpdate()
                 ->first();
-            if ($task !== null && (int) $task->user_id !== $userId) {
-                return [
-                    'mutation_id' => $mutation['mutation_id'],
-                    'task_uuid' => $mutation['task_uuid'],
-                    'status' => 'forbidden',
-                ];
-            }
             $result = $this->applyTaskChange($mutation, $task, $userId);
 
             TaskSyncMutation::query()->create([
@@ -224,6 +215,7 @@ class TaskSyncController extends Controller
             $task = Task::query()->create([
                 'id' => $mutation['task_uuid'],
                 'user_id' => $userId,
+                'updated_by_user_id' => $userId,
                 ...$this->taskAttributes($mutation['task']),
                 'version' => 1,
             ]);
@@ -251,9 +243,11 @@ class TaskSyncController extends Controller
                 $task->restore();
             }
             $task->fill($this->taskAttributes($mutation['task']));
+            $task->updated_by_user_id = $userId;
             $task->version++;
             $task->save();
         } else {
+            $task->updated_by_user_id = $userId;
             $task->version++;
             $task->save();
             $task->delete();

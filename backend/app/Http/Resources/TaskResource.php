@@ -21,6 +21,8 @@ class TaskResource extends JsonResource
             'end_datetime' => $this->end_datetime?->utc()->toISOString(),
             'status' => $this->status,
             'version' => $this->version,
+            'created_by_user_id' => $this->user_id,
+            'updated_by_user_id' => $this->updated_by_user_id,
             'created_at' => $this->created_at?->utc()->toISOString(),
             'updated_at' => $this->updated_at?->utc()->toISOString(),
             'deleted_at' => $this->deleted_at?->utc()->toISOString(),

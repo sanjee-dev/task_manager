@@ -14,13 +14,13 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _email = TextEditingController();
+  final _username = TextEditingController();
   final _password = TextEditingController();
   bool _isSubmitting = false;
 
   @override
   void dispose() {
-    _email.dispose();
+    _username.dispose();
     _password.dispose();
     super.dispose();
   }
@@ -30,7 +30,7 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isSubmitting = true);
     try {
       await context.read<AuthProvider>().login(
-        _email.text.trim(),
+        _username.text.trim(),
         _password.text,
       );
     } catch (error) {
@@ -43,7 +43,7 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) => _AuthPage(
     title: 'Welcome back',
-    subtitle: 'Sign in to manage your tasks.',
+    subtitle: 'Sign in to manage shared tasks.',
     children: [
       if (widget.startupError != null) ...[
         _MessageBox(message: widget.startupError!),
@@ -53,7 +53,17 @@ class _LoginScreenState extends State<LoginScreen> {
         key: _formKey,
         child: Column(
           children: [
-            _EmailField(controller: _email),
+            TextFormField(
+              controller: _username,
+              textInputAction: TextInputAction.next,
+              autocorrect: false,
+              autofillHints: const [AutofillHints.username],
+              decoration: const InputDecoration(
+                labelText: 'Username',
+                prefixIcon: Icon(Icons.person_outline),
+              ),
+              validator: _requiredValidator,
+            ),
             const SizedBox(height: 14),
             _PasswordField(
               controller: _password,
@@ -103,36 +113,33 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _formKey = GlobalKey<FormState>();
   final _name = TextEditingController();
   final _email = TextEditingController();
-  final _password = TextEditingController();
-  final _confirmation = TextEditingController();
   bool _isSubmitting = false;
 
   @override
   void dispose() {
     _name.dispose();
     _email.dispose();
-    _password.dispose();
-    _confirmation.dispose();
     super.dispose();
   }
 
   Future<void> _register() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isSubmitting = true);
-    final email = _email.text.trim();
     try {
       await context.read<AuthProvider>().register(
         name: _name.text.trim(),
-        email: email,
-        password: _password.text,
+        email: _email.text.trim(),
       );
-      if (mounted) {
-        await Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => EmailVerificationScreen(email: email),
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.of(context);
+      Navigator.of(context).pop();
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Account created. Check your email for your username and password.',
           ),
-        );
-      }
+        ),
+      );
     } catch (error) {
       if (mounted) _showMessage(context, error.toString());
     } finally {
@@ -143,7 +150,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   @override
   Widget build(BuildContext context) => _AuthPage(
     title: 'Create your account',
-    subtitle: 'Get started with your personal task list.',
+    subtitle: 'Your login credentials will be emailed to you.',
     children: [
       Form(
         key: _formKey,
@@ -161,23 +168,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
             ),
             const SizedBox(height: 14),
             _EmailField(controller: _email),
-            const SizedBox(height: 14),
-            _PasswordField(
-              controller: _password,
-              label: 'Password',
-              validator: _securePasswordValidator,
-            ),
-            const SizedBox(height: 14),
-            _PasswordField(
-              controller: _confirmation,
-              label: 'Confirm password',
-              validator: (value) => value != _password.text
-                  ? 'Passwords do not match.'
-                  : _requiredValidator(value),
-            ),
             const SizedBox(height: 20),
             _AuthButton(
-              label: 'Create account',
+              label: 'Register',
               isLoading: _isSubmitting,
               onPressed: _register,
             ),
@@ -188,98 +181,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
       TextButton(
         onPressed: () => Navigator.of(context).pop(),
         child: const Text('Already have an account? Login'),
-      ),
-    ],
-  );
-}
-
-class EmailVerificationScreen extends StatefulWidget {
-  const EmailVerificationScreen({super.key, required this.email});
-
-  final String email;
-
-  @override
-  State<EmailVerificationScreen> createState() =>
-      _EmailVerificationScreenState();
-}
-
-class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
-  final _formKey = GlobalKey<FormState>();
-  final _otp = TextEditingController();
-  bool _isSubmitting = false;
-  bool _isResending = false;
-
-  @override
-  void dispose() {
-    _otp.dispose();
-    super.dispose();
-  }
-
-  Future<void> _verify() async {
-    if (!_formKey.currentState!.validate()) return;
-    setState(() => _isSubmitting = true);
-    try {
-      await context.read<AuthProvider>().verifyEmailOtp(
-        email: widget.email,
-        otp: _otp.text.trim(),
-      );
-      if (!mounted) return;
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute<void>(builder: (_) => const LoginScreen()),
-        (_) => false,
-      );
-    } catch (error) {
-      if (mounted) _showMessage(context, error.toString());
-    } finally {
-      if (mounted) setState(() => _isSubmitting = false);
-    }
-  }
-
-  Future<void> _resend() async {
-    setState(() => _isResending = true);
-    try {
-      await context.read<AuthProvider>().resendOtp(widget.email);
-      if (mounted) _showMessage(context, 'If eligible, a new code was sent.');
-    } catch (error) {
-      if (mounted) _showMessage(context, error.toString());
-    } finally {
-      if (mounted) setState(() => _isResending = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => _AuthPage(
-    title: 'Verify your email',
-    subtitle:
-        'Enter the 6-digit code sent to ${_maskEmail(widget.email)}. It expires in 10 minutes.',
-    children: [
-      Form(
-        key: _formKey,
-        child: TextFormField(
-          controller: _otp,
-          keyboardType: TextInputType.number,
-          textInputAction: TextInputAction.done,
-          maxLength: 6,
-          decoration: const InputDecoration(
-            labelText: 'Verification code',
-            prefixIcon: Icon(Icons.mark_email_read_outlined),
-          ),
-          validator: (value) =>
-              value == null || !RegExp(r'^\d{6}$').hasMatch(value.trim())
-              ? 'Enter the 6-digit code.'
-              : null,
-          onFieldSubmitted: (_) => _verify(),
-        ),
-      ),
-      const SizedBox(height: 16),
-      _AuthButton(
-        label: 'Verify email',
-        isLoading: _isSubmitting,
-        onPressed: _verify,
-      ),
-      TextButton(
-        onPressed: _isResending ? null : _resend,
-        child: Text(_isResending ? 'Sending…' : 'Resend code'),
       ),
     ],
   );
@@ -303,15 +204,15 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     super.dispose();
   }
 
-  Future<void> _sendCode() async {
+  Future<void> _sendResetLink() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isSubmitting = true);
-    final email = _email.text.trim();
     try {
-      await context.read<AuthProvider>().forgotPassword(email);
+      await context.read<AuthProvider>().forgotPassword(_email.text.trim());
       if (mounted) {
-        await Navigator.of(context).push(
-          MaterialPageRoute<void>(builder: (_) => ResetOtpScreen(email: email)),
+        _showMessage(
+          context,
+          'If an account exists for that email, a password reset link will be sent.',
         );
       }
     } catch (error) {
@@ -324,8 +225,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   @override
   Widget build(BuildContext context) => _AuthPage(
     title: 'Forgot password?',
-    subtitle:
-        'Enter your email and we’ll send a reset code if an account matches.',
+    subtitle: 'Enter your email address. We’ll email a secure reset link if an account matches.',
     children: [
       Form(
         key: _formKey,
@@ -333,190 +233,13 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       ),
       const SizedBox(height: 18),
       _AuthButton(
-        label: 'Send reset code',
+        label: 'Send reset link',
         isLoading: _isSubmitting,
-        onPressed: _sendCode,
+        onPressed: _sendResetLink,
       ),
       TextButton(
         onPressed: () => Navigator.of(context).pop(),
         child: const Text('Back to Login'),
-      ),
-    ],
-  );
-}
-
-class ResetOtpScreen extends StatefulWidget {
-  const ResetOtpScreen({super.key, required this.email});
-
-  final String email;
-
-  @override
-  State<ResetOtpScreen> createState() => _ResetOtpScreenState();
-}
-
-class _ResetOtpScreenState extends State<ResetOtpScreen> {
-  final _formKey = GlobalKey<FormState>();
-  final _otp = TextEditingController();
-  bool _isSubmitting = false;
-  bool _isResending = false;
-
-  @override
-  void dispose() {
-    _otp.dispose();
-    super.dispose();
-  }
-
-  Future<void> _verify() async {
-    if (!_formKey.currentState!.validate()) return;
-    setState(() => _isSubmitting = true);
-    try {
-      final token = await context.read<AuthProvider>().verifyResetOtp(
-        email: widget.email,
-        otp: _otp.text.trim(),
-      );
-      if (mounted) {
-        await Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) =>
-                ResetPasswordScreen(email: widget.email, resetToken: token),
-          ),
-        );
-      }
-    } catch (error) {
-      if (mounted) _showMessage(context, error.toString());
-    } finally {
-      if (mounted) setState(() => _isSubmitting = false);
-    }
-  }
-
-  Future<void> _resend() async {
-    setState(() => _isResending = true);
-    try {
-      await context.read<AuthProvider>().forgotPassword(widget.email);
-      if (mounted) _showMessage(context, 'If eligible, a new code was sent.');
-    } catch (error) {
-      if (mounted) _showMessage(context, error.toString());
-    } finally {
-      if (mounted) setState(() => _isResending = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => _AuthPage(
-    title: 'Enter reset code',
-    subtitle:
-        'If your account can receive a reset code, it was sent to ${_maskEmail(widget.email)}.',
-    children: [
-      Form(
-        key: _formKey,
-        child: TextFormField(
-          controller: _otp,
-          keyboardType: TextInputType.number,
-          textInputAction: TextInputAction.done,
-          maxLength: 6,
-          decoration: const InputDecoration(
-            labelText: '6-digit code',
-            prefixIcon: Icon(Icons.lock_reset_outlined),
-          ),
-          validator: (value) =>
-              value == null || !RegExp(r'^\d{6}$').hasMatch(value.trim())
-              ? 'Enter the 6-digit code.'
-              : null,
-          onFieldSubmitted: (_) => _verify(),
-        ),
-      ),
-      const SizedBox(height: 16),
-      _AuthButton(
-        label: 'Verify code',
-        isLoading: _isSubmitting,
-        onPressed: _verify,
-      ),
-      TextButton(
-        onPressed: _isResending ? null : _resend,
-        child: Text(_isResending ? 'Sending…' : 'Resend code'),
-      ),
-    ],
-  );
-}
-
-class ResetPasswordScreen extends StatefulWidget {
-  const ResetPasswordScreen({
-    super.key,
-    required this.email,
-    required this.resetToken,
-  });
-
-  final String email;
-  final String resetToken;
-
-  @override
-  State<ResetPasswordScreen> createState() => _ResetPasswordScreenState();
-}
-
-class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
-  final _formKey = GlobalKey<FormState>();
-  final _password = TextEditingController();
-  final _confirmation = TextEditingController();
-  bool _isSubmitting = false;
-
-  @override
-  void dispose() {
-    _password.dispose();
-    _confirmation.dispose();
-    super.dispose();
-  }
-
-  Future<void> _reset() async {
-    if (!_formKey.currentState!.validate()) return;
-    setState(() => _isSubmitting = true);
-    try {
-      await context.read<AuthProvider>().resetPassword(
-        email: widget.email,
-        resetToken: widget.resetToken,
-        password: _password.text,
-      );
-      if (!mounted) return;
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute<void>(builder: (_) => const LoginScreen()),
-        (_) => false,
-      );
-    } catch (error) {
-      if (mounted) _showMessage(context, error.toString());
-    } finally {
-      if (mounted) setState(() => _isSubmitting = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => _AuthPage(
-    title: 'Set a new password',
-    subtitle: 'Choose a strong password you haven’t used before.',
-    children: [
-      Form(
-        key: _formKey,
-        child: Column(
-          children: [
-            _PasswordField(
-              controller: _password,
-              label: 'New password',
-              validator: _securePasswordValidator,
-            ),
-            const SizedBox(height: 14),
-            _PasswordField(
-              controller: _confirmation,
-              label: 'Confirm new password',
-              validator: (value) => value != _password.text
-                  ? 'Passwords do not match.'
-                  : _requiredValidator(value),
-            ),
-          ],
-        ),
-      ),
-      const SizedBox(height: 18),
-      _AuthButton(
-        label: 'Reset password',
-        isLoading: _isSubmitting,
-        onPressed: _reset,
       ),
     ],
   );
@@ -686,6 +409,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
           ),
+          if (user.username.isNotEmpty)
+            Text(
+              'Username: ${user.username}',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: AppColors.muted),
+            ),
           Text(
             user.email,
             textAlign: TextAlign.center,
@@ -906,7 +635,7 @@ class _MessageBox extends StatelessWidget {
 }
 
 String? _requiredValidator(String? value) =>
-    value == null || value.isEmpty ? 'This field is required.' : null;
+    value == null || value.trim().isEmpty ? 'This field is required.' : null;
 
 String? _securePasswordValidator(String? value) {
   if (value == null || value.length < 12) {
@@ -919,13 +648,6 @@ String? _securePasswordValidator(String? value) {
     return 'Include uppercase, lowercase, a number, and a symbol.';
   }
   return null;
-}
-
-String _maskEmail(String email) {
-  final parts = email.split('@');
-  if (parts.length != 2 || parts.first.isEmpty) return email;
-  final first = parts.first.substring(0, 1);
-  return '$first***@${parts.last}';
 }
 
 void _showMessage(BuildContext context, String message) {

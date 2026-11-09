@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
@@ -11,16 +12,20 @@ class DatabaseHelper {
 
   static final DatabaseHelper instance = DatabaseHelper._();
   static const _databaseName = 'task_manager.db';
-  static const _databaseVersion = 4;
+  static const _databaseVersion = 5;
   final String? _databasePath;
   Database? _database;
   String _activeAccountId = 'legacy';
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    final databasePath = await getDatabasesPath();
+    final path =
+        _databasePath ??
+        (kIsWeb
+            ? _databaseName
+            : join(await getDatabasesPath(), _databaseName));
     _database = await openDatabase(
-      _databasePath ?? join(databasePath, _databaseName),
+      path,
       version: _databaseVersion,
       onCreate: (db, version) async {
         await _createTasksTable(db);
@@ -79,6 +84,79 @@ class DatabaseHelper {
           );
           await db.execute(
             'CREATE INDEX IF NOT EXISTS sync_outbox_account_created ON sync_outbox(account_id, created_at)',
+          );
+        }
+        if (oldVersion < 5) {
+          final previousSequenceRows = await db.rawQuery(
+            'SELECT seq FROM sqlite_sequence WHERE name = ?',
+            ['tasks'],
+          );
+          final previousSequence = previousSequenceRows.isEmpty
+              ? 0
+              : (previousSequenceRows.single['seq'] as num).toInt();
+          await db.execute('''
+            CREATE TABLE tasks_v5 (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              task_uuid TEXT NOT NULL,
+              server_id TEXT,
+              title TEXT NOT NULL,
+              note TEXT,
+              start_datetime TEXT NOT NULL,
+              end_datetime TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending',
+              created_at TEXT NOT NULL,
+              sync_status TEXT NOT NULL DEFAULT 'pending',
+              server_version INTEGER NOT NULL DEFAULT 0,
+              local_updated_at TEXT NOT NULL,
+              deleted_at TEXT,
+              sync_error TEXT,
+              conflict_data TEXT,
+              account_id TEXT NOT NULL DEFAULT 'legacy',
+              UNIQUE (task_uuid, account_id)
+            )
+          ''');
+          await db.execute('''
+            INSERT INTO tasks_v5 (
+              id, task_uuid, server_id, title, note, start_datetime,
+              end_datetime, status, created_at, sync_status, server_version,
+              local_updated_at, deleted_at, sync_error, conflict_data, account_id
+            )
+            SELECT
+              id, task_uuid, server_id, title, note, start_datetime,
+              end_datetime, status, created_at, sync_status, server_version,
+              local_updated_at, deleted_at, sync_error, conflict_data, account_id
+            FROM tasks
+          ''');
+          await db.execute('DROP TABLE tasks');
+          await db.execute('ALTER TABLE tasks_v5 RENAME TO tasks');
+          await db.execute(
+            'CREATE INDEX tasks_account_start ON tasks(account_id, start_datetime)',
+          );
+          final currentSequenceRows = await db.rawQuery(
+            'SELECT seq FROM sqlite_sequence WHERE name = ?',
+            ['tasks'],
+          );
+          final currentSequence = currentSequenceRows.isEmpty
+              ? 0
+              : (currentSequenceRows.single['seq'] as num).toInt();
+          if (previousSequence > currentSequence) {
+            if (currentSequenceRows.isEmpty) {
+              await db.insert('sqlite_sequence', {
+                'name': 'tasks',
+                'seq': previousSequence,
+              });
+            } else {
+              await db.rawUpdate(
+                'UPDATE sqlite_sequence SET seq = ? WHERE name = ?',
+                [previousSequence, 'tasks'],
+              );
+            }
+          }
+          await db.update(
+            'sync_state',
+            {'value': '0'},
+            where: 'key = ? OR key LIKE ?',
+            whereArgs: ['cursor', 'cursor:%'],
           );
         }
       },
@@ -141,7 +219,7 @@ class DatabaseHelper {
     await db.execute('''
           CREATE TABLE tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_uuid TEXT NOT NULL UNIQUE,
+            task_uuid TEXT NOT NULL,
             server_id TEXT,
             title TEXT NOT NULL,
             note TEXT,
@@ -155,7 +233,8 @@ class DatabaseHelper {
             deleted_at TEXT,
             sync_error TEXT,
             conflict_data TEXT,
-            account_id TEXT NOT NULL DEFAULT 'legacy'
+            account_id TEXT NOT NULL DEFAULT 'legacy',
+            UNIQUE (task_uuid, account_id)
           )
         ''');
     await db.execute(
